@@ -36,7 +36,7 @@ trf.fit(mydata['train'], valid_data = mydata['valid'], print_validation_examples
 trf = EZTransformer(load_model = "best_model.pt")
 
 # Make Predictions
->>> trf.predict(["c o m p r o m e t e r # V IND PST 3 PL PFV", "h a b l a r # V IND PST 1 SG"])
+>>> trf.predict(["c o m p r o m e t e r # V IND PST 3 PL PFV", "h a b l a r # V IND PST 1 SG IPFV"])
    ['c o m p r o m e t i e r o n', 'h a b l a b a']
 
 # Evaluate on test set
