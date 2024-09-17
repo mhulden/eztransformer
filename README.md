@@ -11,6 +11,7 @@ EZTransformer is a Transformer implementation that allows you to train translati
 
 ```python3
 from eztr import EZTransformer
+import pickle
 
 # Have data
 mydata = pickle.load(open("data/sigmorphon2016spanish.p", "rb")) # Example word inflection data for Spanish
