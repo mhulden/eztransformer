@@ -300,7 +300,7 @@ class TransformerModel(nn.Module):
         self.fc_out = nn.Linear(emb_size, vocab_size)
 
     def forward(self, src, trg):
-        src_mask = self.generate_square_subsequent_mask(src.size(1)).to(src.device)
+        src_mask = None # No mask for encoder
         trg_mask = self.generate_square_subsequent_mask(trg.size(1)).to(trg.device)
 
         src_emb = self.src_embedding(src) * math.sqrt(self.src_embedding.embedding_dim)
