@@ -178,7 +178,12 @@ class EZTransformer:
             prediction = self.predict([src])[0]
             print(f"Input:     {src}")
             print(f"Target:    {trg}")
-            print(f"Predicted: {prediction}\n")
+            if prediction.strip() == trg.strip():
+                # "Predicted:" in green, prediction in default color
+                print(f"\033[92mPredicted:\033[0m {prediction}\n")
+            else:
+                # "Predicted:" in red, prediction in default color
+                print(f"\033[91mPredicted:\033[0m {prediction}\n")
 
     def predict(self, test_data):
         self.model.eval()
@@ -204,9 +209,17 @@ class EZTransformer:
                 predictions.append(' '.join(tokens))
 
         return predictions
+        
+    from tqdm import tqdm
 
-    def score(self, test_data, test_outputs):
-        predictions = self.predict(test_data)
+    def score(self, test_data, test_outputs, batch_size=64):
+        predictions = []
+        # Show progress over the batches we feed into predict
+        for i in tqdm(range(0, len(test_data), batch_size), desc="Scoring"):
+            batch = test_data[i:i+batch_size]
+            batch_predictions = self.predict(batch)
+            predictions.extend(batch_predictions)
+
         correct = 0
         total = len(test_data)
         total_distance = 0
@@ -223,6 +236,7 @@ class EZTransformer:
         print(f"Accuracy: {accuracy * 100:.2f}%")
         print(f"Average Levenshtein Distance: {avg_distance:.2f}")
         return accuracy, avg_distance
+    
 
     def write_model(self, filename='eztransformer_model.pt'):
         state = {
@@ -360,7 +374,7 @@ class RoPEEncoding(nn.Module):
         super().__init__()
         self.emb_size = emb_size
         # Precompute frequency base
-        theta = 10000.0
+        theta = 100.0
         half_dim = emb_size // 2
         freq = torch.exp(-math.log(theta) * torch.arange(0, half_dim, dtype=torch.float) / half_dim)
         self.register_buffer('freq', freq)
