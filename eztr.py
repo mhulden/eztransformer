@@ -209,9 +209,7 @@ class EZTransformer:
                 predictions.append(' '.join(tokens))
 
         return predictions
-        
-    from tqdm import tqdm
-
+    
     def score(self, test_data, test_outputs, batch_size=64):
         predictions = []
         # Show progress over the batches we feed into predict
