@@ -7,7 +7,6 @@ from tqdm import tqdm
 import math
 
 class EZTransformer:
-
     def __init__(self, **kwargs):
         # Set default hyperparameters
         self.device = kwargs.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
@@ -28,6 +27,7 @@ class EZTransformer:
         self.adam_betas = kwargs.get('adam_betas', (0.9, 0.999))
         self.save_best = kwargs.get('save_best', True)
         self.load_model = kwargs.get('load_model', None)
+        self.use_rope = kwargs.get('use_rope', True)
 
         # Initialize placeholders
         self.model = None
@@ -50,7 +50,6 @@ class EZTransformer:
             self.build_model()
             self.optimizer = optim.Adam(self.model.parameters(), lr=self.lrt, betas=self.adam_betas)
         else:
-            # If model already exists, continue training with existing weights
             print("Continuing training with existing model weights.")
 
         # Prepare data loaders
@@ -88,12 +87,12 @@ class EZTransformer:
                 epoch_loss += loss.item()
 
             avg_epoch_loss = epoch_loss / len(train_loader)
-            print(f"Epoch {epoch+1}: Training Loss: {avg_epoch_loss:.4f}")
+            print(f"Epoch {epoch+1}: Training Loss: {avg_epoch_loss:.6f}")
 
             # Validation
             if valid_loader:
                 valid_loss = self.evaluate(valid_loader, criterion)
-                print(f"Epoch {epoch+1}: Validation Loss: {valid_loss:.4f}")
+                print(f"Epoch {epoch+1}: Validation Loss: {valid_loss:.6f}")
 
                 # Save the best model
                 if self.save_best and valid_loss < self.best_valid_loss:
@@ -137,7 +136,8 @@ class EZTransformer:
             dec_num_layers=self.dnl,
             dec_num_heads=self.dah,
             dropout=self.drp,
-            pad_idx=self.pad_idx
+            pad_idx=self.pad_idx,
+            use_rope=self.use_rope
         ).to(self.device)
 
     def create_dataloader(self, data, batch_size):
@@ -200,7 +200,7 @@ class EZTransformer:
                     if next_token == self.eos_idx:
                         break
 
-                tokens = [self.idx2token[idx] for idx in trg_indices[1:-1]]  # Exclude <sos> and <eos>
+                tokens = [self.idx2token[idx] for idx in trg_indices[1:-1]]
                 predictions.append(' '.join(tokens))
 
         return predictions
@@ -275,18 +275,22 @@ class EZTransformer:
         return current_row[n]
 
 class TransformerModel(nn.Module):
-
     def __init__(self, vocab_size, emb_size, hidden_size, num_layers, num_heads,
                  dec_emb_size, dec_hidden_size, dec_num_layers, dec_num_heads,
-                 dropout, pad_idx):
+                 dropout, pad_idx, use_rope=False):
         super(TransformerModel, self).__init__()
 
         self.pad_idx = pad_idx
+        self.use_rope = use_rope
         self.src_embedding = nn.Embedding(vocab_size, emb_size, padding_idx=pad_idx)
         self.trg_embedding = nn.Embedding(vocab_size, dec_emb_size, padding_idx=pad_idx)
 
-        self.pos_encoder = PositionalEncoding(emb_size, dropout)
-        self.pos_decoder = PositionalEncoding(dec_emb_size, dropout)
+        if self.use_rope:
+            self.pos_encoder = RoPEEncoding(emb_size)
+            self.pos_decoder = RoPEEncoding(dec_emb_size)
+        else:
+            self.pos_encoder = PositionalEncoding(emb_size, dropout)
+            self.pos_decoder = PositionalEncoding(dec_emb_size, dropout)
 
         self.transformer = nn.Transformer(
             d_model=emb_size,
@@ -300,7 +304,7 @@ class TransformerModel(nn.Module):
         self.fc_out = nn.Linear(emb_size, vocab_size)
 
     def forward(self, src, trg):
-        src_mask = None # No mask for encoder
+        src_mask = None
         trg_mask = self.generate_square_subsequent_mask(trg.size(1)).to(trg.device)
 
         src_emb = self.src_embedding(src) * math.sqrt(self.src_embedding.embedding_dim)
@@ -330,7 +334,6 @@ class TransformerModel(nn.Module):
         return mask
 
 class PositionalEncoding(nn.Module):
-
     def __init__(self, emb_size, dropout, maxlen=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -352,8 +355,38 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:, :x.size(1), :].to(x.device)
         return self.dropout(x)
 
-class TranslationDataset(torch.utils.data.Dataset):
+class RoPEEncoding(nn.Module):
+    def __init__(self, emb_size):
+        super().__init__()
+        self.emb_size = emb_size
+        # Precompute frequency base
+        theta = 10000.0
+        half_dim = emb_size // 2
+        freq = torch.exp(-math.log(theta) * torch.arange(0, half_dim, dtype=torch.float) / half_dim)
+        self.register_buffer('freq', freq)
 
+    def forward(self, x):
+        # x: [batch, seq_len, emb_size]
+        seq_len = x.size(1)
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(1)  # [seq_len, 1]
+        freqs = self.freq.unsqueeze(0)  # [1, half_dim]
+
+        angles = positions * freqs  # [seq_len, half_dim]
+        sin = torch.sin(angles)
+        cos = torch.cos(angles)
+
+        x_even = x[..., ::2]
+        x_odd = x[..., 1::2]
+
+        x_rotated_even = x_even * cos - x_odd * sin
+        x_rotated_odd = x_odd * cos + x_even * sin
+
+        x = torch.zeros_like(x)
+        x[..., ::2] = x_rotated_even
+        x[..., 1::2] = x_rotated_odd
+        return x
+
+class TranslationDataset(torch.utils.data.Dataset):
     def __init__(self, data, token2idx, sos_idx, eos_idx, unk_idx, pad_idx):
         self.data = data
         self.token2idx = token2idx
