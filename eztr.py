@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader
 import random
 from tqdm import tqdm
 import math
+import pandas as pd
+
 
 class EZTransformer:
     def __init__(self, **kwargs):
@@ -43,7 +45,7 @@ class EZTransformer:
         if self.load_model:
             self.load_model_from_file(self.load_model)
 
-    def fit(self, train_data, valid_data=None, max_epochs=100, print_validation_examples=0):
+    def fit(self, train_data, valid_data=None, max_epochs=100, print_validation_examples=0, return_history=False):
         # Build vocabulary from train_data if not already built
         if self.token2idx is None:
             self.build_vocab(train_data)
@@ -62,6 +64,9 @@ class EZTransformer:
         # Define loss function
         criterion = nn.CrossEntropyLoss(ignore_index=self.pad_idx, label_smoothing=self.lst)
 
+        # Define the history dataframe
+        training_history = pd.DataFrame(columns = ["epoch", "train_loss", "val_loss"])
+        
         # Training loop
         for epoch in range(max_epochs):
             # Training
@@ -87,6 +92,7 @@ class EZTransformer:
                 epoch_loss += loss.item()
 
             avg_epoch_loss = epoch_loss / len(train_loader)
+
             print(f"Epoch {epoch+1}: Training Loss: {avg_epoch_loss:.6f}")
 
             # Validation
@@ -102,6 +108,13 @@ class EZTransformer:
             # Print validation examples
             if print_validation_examples > 0 and valid_data:
                 self.print_validation_examples(valid_data, n=print_validation_examples)
+            
+            training_history.loc[epoch, "epoch"] = epoch + 1
+            training_history.loc[epoch, "train_loss"] = avg_epoch_loss
+            training_history.loc[epoch, "val_loss"] = valid_loss
+
+        if return_history:
+            return training_history
 
     def build_vocab(self, data):
         tokens = set()
