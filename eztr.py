@@ -30,6 +30,7 @@ class EZTransformer:
         self.save_best = kwargs.get('save_best', True)
         self.load_model = kwargs.get('load_model', None)
         self.use_rope = kwargs.get('use_rope', True)
+        self.compile_model = kwargs.get('compile_model', False)
 
         # Initialize placeholders
         self.model = None
@@ -50,7 +51,7 @@ class EZTransformer:
         if self.token2idx is None:
             self.build_vocab(train_data)
             self.build_model()
-            self.optimizer = optim.Adam(self.model.parameters(), lr=self.lrt, betas=self.adam_betas)
+            self.optimizer = self.build_optimizer()
         else:
             print("Continuing training with existing model weights.")
 
@@ -72,6 +73,7 @@ class EZTransformer:
             # Training
             self.model.train()
             epoch_loss = 0
+            valid_loss = None
             for src_batch, trg_batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs}"):
                 src_batch = src_batch.to(self.device)
                 trg_batch = trg_batch.to(self.device)
@@ -138,6 +140,13 @@ class EZTransformer:
         self.vocab_size = len(self.token2idx)
 
     def build_model(self):
+        if self.ded != self.eed:
+            raise ValueError("Decoder embedding size (ded) must match encoder embedding size (eed) for nn.Transformer.")
+        if self.dah != self.eah:
+            raise ValueError("Decoder attention heads (dah) must match encoder attention heads (eah) for nn.Transformer.")
+        if self.dhs != self.ehs:
+            raise ValueError("Decoder hidden size (dhs) must match encoder hidden size (ehs) for nn.Transformer.")
+
         self.model = TransformerModel(
             vocab_size=self.vocab_size,
             emb_size=self.eed,
@@ -152,6 +161,15 @@ class EZTransformer:
             pad_idx=self.pad_idx,
             use_rope=self.use_rope
         ).to(self.device)
+        if self.compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
+
+    def build_optimizer(self):
+        if self.optimizer_name.lower() == 'adamw':
+            return optim.AdamW(self.model.parameters(), lr=self.lrt, betas=self.adam_betas)
+        if self.optimizer_name.lower() == 'adam':
+            return optim.Adam(self.model.parameters(), lr=self.lrt, betas=self.adam_betas)
+        raise ValueError(f"Unsupported optimizer '{self.optimizer_name}'. Supported optimizers: 'adam', 'adamw'.")
 
     def create_dataloader(self, data, batch_size):
         dataset = TranslationDataset(
@@ -168,7 +186,7 @@ class EZTransformer:
         self.model.eval()
         epoch_loss = 0
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for src_batch, trg_batch in data_loader:
                 src_batch = src_batch.to(self.device)
                 trg_batch = trg_batch.to(self.device)
@@ -185,6 +203,7 @@ class EZTransformer:
         return avg_loss
 
     def print_validation_examples(self, valid_data, n=2):
+        n = min(n, len(valid_data))
         examples = random.sample(valid_data, n)
         print("\nValidation Examples:")
         for src, trg in examples:
@@ -202,7 +221,7 @@ class EZTransformer:
         self.model.eval()
         predictions = []
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for src in test_data:
                 src_indices = [self.token2idx.get(token, self.unk_idx) for token in src.split()]
                 src_tensor = torch.LongTensor([self.sos_idx] + src_indices + [self.eos_idx]).unsqueeze(0).to(self.device)
@@ -218,7 +237,10 @@ class EZTransformer:
                     if next_token == self.eos_idx:
                         break
 
-                tokens = [self.idx2token[idx] for idx in trg_indices[1:-1]]
+                predicted_indices = trg_indices[1:]
+                if predicted_indices and predicted_indices[-1] == self.eos_idx:
+                    predicted_indices = predicted_indices[:-1]
+                tokens = [self.idx2token[idx] for idx in predicted_indices]
                 predictions.append(' '.join(tokens))
 
         return predictions
@@ -265,7 +287,7 @@ class EZTransformer:
         print(f"Model saved to {filename}")
 
     def load_model_from_file(self, filename):
-        state = torch.load(filename, map_location=self.device)
+        state = torch.load(filename, map_location=self.device, weights_only=False)
         self.token2idx = state['token2idx']
         self.idx2token = state['idx2token']
         self.pad_idx = state['pad_idx']
@@ -278,7 +300,7 @@ class EZTransformer:
         self.build_model()
         self.model.load_state_dict(state['model_state_dict'])
 
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lrt, betas=self.adam_betas)
+        self.optimizer = self.build_optimizer()
         self.optimizer.load_state_dict(state['optimizer_state_dict'])
         print(f"Model loaded from {filename}")
 
@@ -323,15 +345,13 @@ class TransformerModel(nn.Module):
             num_encoder_layers=num_layers,
             num_decoder_layers=dec_num_layers,
             dim_feedforward=hidden_size,
-            dropout=dropout
+            dropout=dropout,
+            batch_first=True
         )
 
         self.fc_out = nn.Linear(emb_size, vocab_size)
 
     def forward(self, src, trg):
-        src_mask = None
-        trg_mask = self.generate_square_subsequent_mask(trg.size(1)).to(trg.device)
-
         src_emb = self.src_embedding(src) * math.sqrt(self.src_embedding.embedding_dim)
         src_emb = self.pos_encoder(src_emb)
 
@@ -341,21 +361,24 @@ class TransformerModel(nn.Module):
         src_key_padding_mask = (src == self.pad_idx)
         trg_key_padding_mask = (trg == self.pad_idx)
 
+        transformer_kwargs = {
+            "src_key_padding_mask": src_key_padding_mask,
+            "tgt_key_padding_mask": trg_key_padding_mask,
+            "memory_key_padding_mask": src_key_padding_mask,
+        }
+        trg_mask = self.generate_square_subsequent_mask(trg.size(1), trg.device)
         output = self.transformer(
-            src_emb.permute(1, 0, 2),
-            trg_emb.permute(1, 0, 2),
-            src_mask=src_mask,
+            src_emb,
+            trg_emb,
             tgt_mask=trg_mask,
-            src_key_padding_mask=src_key_padding_mask,
-            tgt_key_padding_mask=trg_key_padding_mask,
-            memory_key_padding_mask=src_key_padding_mask
+            **transformer_kwargs
         )
 
-        output = self.fc_out(output.permute(1, 0, 2))
+        output = self.fc_out(output)
         return output
 
-    def generate_square_subsequent_mask(self, sz):
-        mask = torch.triu(torch.ones(sz, sz), diagonal=1).bool()
+    def generate_square_subsequent_mask(self, sz, device):
+        mask = torch.triu(torch.ones(sz, sz, device=device), diagonal=1).bool()
         return mask
 
 class PositionalEncoding(nn.Module):
@@ -387,29 +410,41 @@ class RoPEEncoding(nn.Module):
         # Precompute frequency base
         theta = 100.0
         half_dim = emb_size // 2
-        freq = torch.exp(-math.log(theta) * torch.arange(0, half_dim, dtype=torch.float) / half_dim)
+        if half_dim == 0:
+            freq = torch.empty(0, dtype=torch.float)
+        else:
+            freq = torch.exp(-math.log(theta) * torch.arange(0, half_dim, dtype=torch.float) / half_dim)
         self.register_buffer('freq', freq)
 
     def forward(self, x):
         # x: [batch, seq_len, emb_size]
         seq_len = x.size(1)
+        rot_dim = (self.emb_size // 2) * 2
+        x_rot = x[..., :rot_dim]
+        x_pass = x[..., rot_dim:]
+
+        if rot_dim == 0:
+            return x
+
         positions = torch.arange(seq_len, device=x.device).unsqueeze(1)  # [seq_len, 1]
-        freqs = self.freq.unsqueeze(0)  # [1, half_dim]
+        freqs = self.freq.unsqueeze(0).to(x.dtype)  # [1, half_dim]
 
         angles = positions * freqs  # [seq_len, half_dim]
         sin = torch.sin(angles)
         cos = torch.cos(angles)
 
-        x_even = x[..., ::2]
-        x_odd = x[..., 1::2]
+        x_even = x_rot[..., ::2]
+        x_odd = x_rot[..., 1::2]
 
         x_rotated_even = x_even * cos - x_odd * sin
         x_rotated_odd = x_odd * cos + x_even * sin
 
-        x = torch.zeros_like(x)
-        x[..., ::2] = x_rotated_even
-        x[..., 1::2] = x_rotated_odd
-        return x
+        out = torch.zeros_like(x_rot)
+        out[..., ::2] = x_rotated_even
+        out[..., 1::2] = x_rotated_odd
+        if x_pass.numel() > 0:
+            out = torch.cat([out, x_pass], dim=-1)
+        return out
 
 class TranslationDataset(torch.utils.data.Dataset):
     def __init__(self, data, token2idx, sos_idx, eos_idx, unk_idx, pad_idx):
