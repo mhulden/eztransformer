@@ -1,8 +1,10 @@
 from eztr import EZTransformer
 from random import shuffle
+from pathlib import Path
 
 # Load English dictionary with IPA transcriptions
-lines = [l. strip() for l in open("newdic-ipa.txt", encoding = "utf8")]
+data_path = Path(__file__).resolve().parents[1] / "data" / "newdic-ipa.txt"
+lines = [l.strip() for l in open(data_path, encoding="utf8")]
 
 # Grab field 3 (spelling) and 0 (pronunciation)
 wordpron = [(l.split('\t')[3], l.split('\t')[0]) for l in lines]
