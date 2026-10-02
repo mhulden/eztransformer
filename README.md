@@ -5,7 +5,7 @@
 
 EZTransformer is a Transformer implementation that allows you to train translation models with simple API calls. 
 
-* Dependencies: PyTorch, tqdm
+* Dependencies: PyTorch, tqdm (pandas optional, only needed for `return_history=True`)
 
 ## Quickstart
 
