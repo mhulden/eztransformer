@@ -46,7 +46,7 @@ trf = EZTransformer(load_model = "best_model.pt")
 trf.predict(["h a b l a r # V IND PST 1 SG IPFV"], beam_size = 5)
 
 # Evaluate on test set
-trf.score(mydata['test_inputs'], mydata['test_targets'])
+trf.score(mydata['test_inputs'], mydata['test_targets'], batch_size = 1024)
 trf.score(mydata['test_inputs'], mydata['test_targets'], beam_size = 5)
 ```
 
